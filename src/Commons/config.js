@@ -2,7 +2,7 @@
 import dotenv from 'dotenv';
 import path from 'path';
 
-if (process.env.NODE_ENV === 'test') {
+if (process.env['NODE_ENV'] === 'test') {
   dotenv.config({
     path: path.resolve(process.cwd(), '.test.env'),
     override: true,
@@ -13,9 +13,9 @@ if (process.env.NODE_ENV === 'test') {
 
 const config = {
   app: {
-    host: process.env.HOST || (process.env.NODE_ENV === 'production' ? '127.0.0.1' : 'localhost'),
-    port: process.env.PORT || 3000,
-    debug: process.env.NODE_ENV === 'development' ? { request: ['error'] } : {},
+    host: process.env['NODE_ENV'] !== 'production' ? 'localhost' : '0.0.0.0',
+    port: process.env.PORT,
+    debug: process.env['NODE_ENV'] === 'development' ? { request: ['error'] } : {},
   },
   database: {
     host: process.env.PGHOST,
