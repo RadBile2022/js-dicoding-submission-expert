@@ -1,0 +1,77 @@
+name: Continuous Deployment
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH key
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy Forum API to VM
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          APP_DIR: ${{ secrets.APP_DIR }}
+          BRANCH: ${{ github.ref_name }}
+          REPOSITORY_URL: https://github.com/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_ed25519 "$SSH_USER@$SSH_HOST" \
+            "APP_DIR='$APP_DIR' BRANCH='$BRANCH' REPOSITORY_URL='$REPOSITORY_URL' bash -s" <<'REMOTE'
+            set -euo pipefail
+
+            if [ ! -d "$APP_DIR/.git" ]; then
+              mkdir -p "$(dirname "$APP_DIR")"
+              git clone "$REPOSITORY_URL" "$APP_DIR"
+            fi
+
+            cd "$APP_DIR"
+            git fetch --prune origin
+            git checkout "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+
+            if [ ! -f .env ]; then
+              echo "ERROR: $APP_DIR/.env belum ada. Jalankan bootstrap VM atau buat .env production terlebih dahulu." >&2
+              exit 1
+            fi
+
+            npm ci
+            npm run migrate -- up
+            npm prune --omit=dev
+            pm2 startOrReload ecosystem.config.cjs --env production
+            pm2 save
+
+            # CD hanya hijau bila aplikasi benar-benar merespons pada loopback.
+            status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:3000/threads/cd-smoke-test || true)"
+            if [ "$status" = "000" ] || [ "$status" -ge 500 ]; then
+              echo "ERROR: smoke test gagal, HTTP status=$status" >&2
+              pm2 logs forum-api --lines 80 --nostream || true
+              exit 1
+            fi
+            echo "Deployment OK, local smoke status=$status"
+          REMOTE
